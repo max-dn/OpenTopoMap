@@ -1,0 +1,89 @@
+#!/bin/bash
+#
+# expire_tiles [minzoom] [highzoom] [maxzoom]
+# reads expire.list created by osm2pgsql and touches the meta tile file
+# to some date in history (highzoom tiles are touched to "hightouchdate",
+# all others to "touchdate")
+#
+
+
+# time to which expired meta tiles are set
+# eg touchdate=`date -Iseconds --date "4 weeks ago"`
+# or touchdate=2000-01-01T12:00:00+02:00
+touchdate=`date -Iseconds --date "3 weeks ago"`
+hightouchdate=2000-01-01T12:00:00+01:00
+
+# Size of a meta tile
+meta_x=8
+meta_y=8
+
+# path to the tiles and the expiry list
+tilepath="/mnt/tiles/opentopomap"
+workdir="/home/otmuser/data/updates/"
+mintouch=$1
+highzoom=$2
+maxtouch=$3
+
+
+d=`date +"%Y-%m-%d %H:%M:%S"`
+echo "$d reading expire.list-*"
+for i in `find $workdir -name "expire.list-*"`; do 
+ n=`cat $i | wc -l`
+ echo "$d      $i ($n lines)" ; 
+done
+echo "$d touching to $touchdate or $hightouchdate"
+
+cat `find $workdir -name "expire.list-*"` | awk -v meta_x=$meta_x -v meta_y=$meta_y -v tilepath=$tilepath -v touchdate=$touchdate -v hightouchdate=$hightouchdate -v mintouch=$mintouch -v maxtouch=$maxtouch -v highzoom=$highzoom '
+ @load "filefuncs"
+ BEGIN{FS="/";if(!mintouch){mintouch=0;}if(!maxtouch){maxtouch=17;}if(!highzoom){highzoom=16;}
+       metatiles=0;tileexist=0;tiles=0;
+       d=strftime("%Y-%m-%d %H:%M:%S", systime());
+       print d" reading tile list";
+      }
+      {z=$1;xm=int($2/meta_x)*meta_x;ym=int($3/meta_y)*meta_y;
+#
+# Construction of tile cache path, see https://github.com/openstreetmap/mod_tile/blob/master/readme.txt 
+#      
+       p1=or(and(rshift(xm,12),0xf0) , and(rshift(ym,16),0x0f));
+       p2=or(and(rshift(xm, 8),0xf0) , and(rshift(ym,12),0x0f));
+       p3=or(and(rshift(xm, 4),0xf0) , and(rshift(ym, 8),0x0f));
+       p4=or(and(       xm    ,0xf0) , and(rshift(ym, 4),0x0f));
+       p5=or(and(lshift(xm, 4),0xf0) , and(       ym    ,0x0f));
+       metatilepath="/"tilepath"/"z"/"p1"/"p2"/"p3"/"p4"/"p5".meta"
+#
+# check, if we already touched this metatile. 
+# If not, check if it exists. If yes, touch it.
+#
+       if((z>=mintouch)&&z<=(maxtouch)){
+        if(!metachecked[metatilepath]){
+         metachecked[metatilepath]=1;
+         metatiles++;
+         if(stat(metatilepath,dummy)>=0){
+          tileexist++;
+          if(z>=highzoom){system("touch --date "hightouchdate" "metatilepath);}
+          else           {system("touch --date "touchdate" "metatilepath);}
+         }
+        }
+       }
+# 
+# write something every 1M tiles, just for entertainment
+#
+       tiles++;
+       if((tiles%1000000)==0){
+        d=strftime("%Y-%m-%d %H:%M:%S", systime());
+        print d" "tiles" entries read, "tileexist" files touched";
+       }
+      }
+#
+# Finish!
+#
+   END{d=strftime("%Y-%m-%d %H:%M:%S", systime());
+       print d" "tiles" tiles in "metatiles" meta tiles, "tileexist" of them exist in z"mintouch"-"maxtouch" and were touched to "touchdate;
+      }'
+
+d=`date +"%Y-%m-%d %H:%M:%S"`
+echo "$d deleting expire.list-*"
+for i in `find $workdir -name "expire.list-*"`; do rm $i ; done
+
+d=`date +"%Y-%m-%d %H:%M:%S"`
+echo "$d expire tile finished"
