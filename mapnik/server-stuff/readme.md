@@ -24,6 +24,9 @@ tirex and change the web site.
 ### scripts/update_daily_db.sh
 Does the main part of differential update, startet as database user. 
 
+### scripts/expire_tiles
+Marks updated tiles as dirty
+
 ### script/tirexbatch
 Starts the backround rendering.
 
