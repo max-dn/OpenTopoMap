@@ -1,0 +1,82 @@
+#!/bin/bash
+#
+# If usage of /mnt/tiles is >=MAXDISKUSAGE, remove old tiles in Z17 and Z16
+# until usage <= MINDISKUSAGE
+#
+
+MAXDISKUSAGE=97
+MINDISKUSAGE=93
+
+d=`date +"%Y-%m-%d %H:%M:%S"`
+p=`df -h | grep /mnt/tiles | awk '{gsub("%","");print $5;}'`
+echo "$d [cleancache] used disk space: $p%" >> /var/log/tirexwatch.log
+
+
+if ( tirex-send ping ) ; then
+ p=`df -h | grep /mnt/tiles | awk '{gsub("%","");print $5;}'`
+
+ if [ $p -ge $MAXDISKUSAGE ] ; then
+  d=`date +"%Y-%m-%d %H:%M:%S"`
+  echo "$d [cleancache] removing files until usage < $MINDISKUSAGE%" >> /var/log/tirexwatch.log
+  echo "$d [cleancache] removing Z17 older than 21 days" >> /var/log/tirexwatch.log
+  find /mnt/tiles/opentopomap/17/ -type f -mtime +21 -exec rm {} \; 
+  p=`df -h | grep /mnt/tiles | awk '{gsub("%","");print $5;}'`
+  d=`date +"%Y-%m-%d %H:%M:%S"`
+  echo "$d [cleancache] used disk space now: $p%"  >> /var/log/tirexwatch.log
+
+  if [ $p -ge $MINDISKUSAGE ] ; then
+   echo "$d [cleancache] removing Z17 older than 7 days"  >> /var/log/tirexwatch.log
+   find /mnt/tiles/opentopomap/17/ -type f -mtime +7 -exec rm {} \; 
+   p=`df -h | grep /mnt/tiles | awk '{gsub("%","");print $5;}'`
+   d=`date +"%Y-%m-%d %H:%M:%S"`
+   echo "$d [cleancache] used disk space now: $p%"  >> /var/log/tirexwatch.log
+
+   if [ $p -ge $MINDISKUSAGE ] ; then
+    echo "$d [cleancache] removing Z16 older than 21 days"  >> /var/log/tirexwatch.log
+    find /mnt/tiles/opentopomap/16/ -type f -mtime +21 -exec rm {} \; 
+    p=`df -h | grep /mnt/tiles | awk '{gsub("%","");print $5;}'`
+    d=`date +"%Y-%m-%d %H:%M:%S"`
+    echo "$d [cleancache] used disk space now: $p%"  >> /var/log/tirexwatch.log
+
+    if [ $p -ge $MINDISKUSAGE ] ; then
+     echo "$d [cleancache] removing all Z17"  >> /var/log/tirexwatch.log
+     find /mnt/tiles/opentopomap/17/ -type f -exec rm {} \; 
+     p=`df -h | grep /mnt/tiles | awk '{gsub("%","");print $5;}'`
+     d=`date +"%Y-%m-%d %H:%M:%S"`
+     echo "$d [cleancache] used disk space now: $p%"  >> /var/log/tirexwatch.log
+    
+     if [ $p -ge $MINDISKUSAGE ] ; then
+      echo "$d [cleancache] removing Z16 older than 7 days"  >> /var/log/tirexwatch.log
+      find /mnt/tiles/opentopomap/16/ -type f -mtime +7 -exec rm {} \; 
+      p=`df -h | grep /mnt/tiles | awk '{gsub("%","");print $5;}'`
+      d=`date +"%Y-%m-%d %H:%M:%S"`
+      echo "$d [cleancache] used disk space now: $p%"  >> /var/log/tirexwatch.log
+
+      if [ $p -ge $MINDISKUSAGE ] ; then
+       echo "$d [cleancache] removing all Z16"  >> /var/log/tirexwatch.log
+       find /mnt/tiles/opentopomap/16/ -type f -exec rm {} \; 
+       p=`df -h | grep /mnt/tiles | awk '{gsub("%","");print $5;}'`
+       d=`date +"%Y-%m-%d %H:%M:%S"`
+       echo "$d [cleancache] used disk space now: $p%"  >> /var/log/tirexwatch.log
+   
+       if [ $p -ge $MINDISKUSAGE ] ; then
+        echo "$d [cleancache] removing Z15 older than 14 days"  >> /var/log/tirexwatch.log
+        find /mnt/tiles/opentopomap/15/ -type f -mtime +14 -exec rm {} \; 
+        p=`df -h | grep /mnt/tiles | awk '{gsub("%","");print $5;}'`
+        d=`date +"%Y-%m-%d %H:%M:%S"`
+        echo "$d [cleancache] used disk space now: $p%"  >> /var/log/tirexwatch.log
+       fi
+      fi
+     fi
+    fi
+   fi
+  fi
+ else
+  d=`date +"%Y-%m-%d %H:%M:%S"`
+  echo "$d [cleancache] nothing to do"  >> /var/log/tirexwatch.log
+ fi
+else 
+ d=`date +"%Y-%m-%d %H:%M:%S"`
+ echo "$d [cleancache] did nothing because tirex was not running"  >> /var/log/tirexwatch.log
+fi
+

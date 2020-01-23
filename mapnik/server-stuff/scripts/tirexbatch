@@ -1,0 +1,62 @@
+#!/bin/bash
+#
+# If disk usage < 96% and the queue length of mapnik is < 5000 then fill the queue with 2000 very old existing tiles 
+# with very low priority. "very lold" = "older than ../planet-import-complete + some days" to ensure that after some time 
+# all tiles are newer than the last planet import (+3 days). If planet-import-complete is younger than some days, render
+# tiles older than 24 hours.
+#
+
+# maximum disk usage for starting batches (in %)
+DISKSPACE=98
+
+# maximum length of the queue before the batches are started
+MAXQUEUELEN=5000
+
+# length of the queue (tirex-batch tries to keep the length of the batch queue at this number)
+QLEN=2000
+
+# time which is added to the mtime of planet-import-complete to get a gap between backround jobs and live rendering (in days)
+AHEADDAYS=7
+LOWZOOMAHEADDAYS=14
+
+
+while ( ps axf | grep tirex-batch | grep -v grep >/dev/null ) ; do
+ killall tirex-batch
+ sleep 60
+done
+
+if ( ps axf | grep tirex-master | grep -v grep >/dev/null ) ; then 
+ p=`df -h | grep /mnt/tiles | awk '{gsub("%","");print $5;}'`
+ if [ $p -lt $DISKSPACE ] ; then
+  que=`tirex-status -o -r | jq -r ".queue.size"` 
+  if [ $que -lt $MAXQUEUELEN ] ; then 
+   if [ -e /mnt/tiles/opentopomap/planet-import-complete ] ; then 
+#
+# extra job for rendering Z0-12 in the early morning for zoom levels which are not in expiry_tiles. There we have shorter time limits
+#    
+    if [ `date +"%H"` -lt 8 ] ; then
+     d=`date +"%Y-%m-%d %H:%M:%S"`
+     starttime=`stat -c "%Y" /mnt/tiles/opentopomap/planet-import-complete |awk -v days=$LOWZOOMAHEADDAYS '{t=$1+days*24*60*60;if(t>systime()){t=systime()-(1+days)*24*60*60;}print t}'`
+     st=`date -d @$starttime`
+     d=`date +"%Y-%m-%d %H:%M:%S"`
+     echo "$d [tirexbatch] restarting tirex-batch for lowzoom tiles 0-11 older than $starttime / $st"  >> /var/log/tirexwatch.log
+     tirex-batch -n $QLEN --filter "older($starttime);exists" --prio=30 map=opentopomap bbox=-180,-90,180,90 z=0-11
+    fi
+    starttime=`stat -c "%Y" /mnt/tiles/opentopomap/planet-import-complete |awk -v days=$AHEADDAYS '{t=$1+days*24*60*60;if(t>systime()){t=systime()-(1+days)*24*60*60;}print t}'`    
+    st=`date -d @$starttime`
+    d=`date +"%Y-%m-%d %H:%M:%S"`
+    echo "$d [tirexbatch] restarting tirex-batch for highzoom tiles 12-15 older than $starttime / $st"  >> /var/log/tirexwatch.log
+    tirex-batch -n $QLEN --filter "older($starttime);exists" --prio=30 map=opentopomap bbox=-180,-90,180,90 z=12-15
+   else
+    d=`date +"%Y-%m-%d %H:%M:%S"`
+    echo "$d [tirexbatch] /mnt/tiles/opentopomap/planet-import-complete missing"  >> /var/log/tirexwatch.log
+   fi
+  else
+   d=`date +"%Y-%m-%d %H:%M:%S"`
+   echo "$d [tirexbatch] queue too long for restart: $que"  >> /var/log/tirexwatch.log
+  fi
+ else
+  d=`date +"%Y-%m-%d %H:%M:%S"`
+  echo "$d [tirexbatch] not enough disk space: $p"  >> /var/log/tirexwatch.log
+ fi
+fi

@@ -1,0 +1,23 @@
+.
+.
+.
+#
+# check memory usage of tirex and restart it if its too much, keep planet-import-complete up to date
+1-59/5 * * * *  root /usr/local/bin/tirexwatch >/dev/null 2>/dev/null
+
+#
+# delete old tiles if hard drive gets full (not on thu, because update is running)
+14 1    * * 1,2,3,5,6,7   tirex   /usr/local/bin/cleancache  >/dev/null 2>/dev/null
+
+#
+# background rendering
+12 0,6,14,21  * * *   tirex   /usr/local/bin/tirexbatch >/dev/null 2>/dev/null
+
+#
+# diff database update
+17 0   *    * 4   root   /usr/local/bin/diffupdate.sh  >/dev/null 2>/dev/null
+
+#
+# lowzoom update on first and third monday of each month (date +%u = day of week with monday=1 ... sunday=7)
+17 0  1,2,3,4,5,6,7,15,16,17,18,19,20,21 * *   root  [ $(date  +\%u) = 1 ] && /usr/local/bin/diffupdate.sh -onlypreprocessing >/dev/null 2>/dev/null
+

@@ -1,0 +1,207 @@
+#!/bin/bash
+#
+# checks some parameter and memory usage for tirex and its mapnik processes if > 60 restart
+# update modification time of /mnt/tiles/opentopomap/planet-import-complete 
+# change configuratin of apaches mod_tile if /planet-import-complete is younger than some weeks
+#
+
+# maximum alowed usage of /mnt/tiles (in %)
+DISKSPACE=98
+
+# maximum memorys used by tirex+mapnik before tirex is restarted (in GByte)
+MAXMEMORY=58
+
+# maximum mem+swap to use before tirex is restarted (in GByte)
+MAXTOTALMEM=63
+
+# age of a tile considered as dirty (in days)
+CACHETIME=28
+
+# 
+# collect some parametres
+#
+(
+ load=`cat /proc/loadavg | cut -d" " -f1`
+ wait=`iostat -y 2 1 | awk 'NR==4{w=gsub(",",".",$4);print $4;}'`
+ conn=`netstat -n | grep ":80\|:443" | wc -l`
+ addr=`netstat -n | grep ":80\|:443" | awk '{print $5;}' | cut -d":" -f1  | awk '{n[$0]++;z++}END{for(i in n){a++};print a}'`
+ swap=`cat /proc/swaps | awk '{n+=$4}END{printf("%d\n",n/1024/1024);}'`
+ usmem=`free | grep Mem| awk '{printf("%d\n",$3/1024/1024);}'`
+ totalmem=$(($usmem+$swap))
+ mem=`ps axfl | grep "mapnik\|tirex-master" | awk '{n+=$8;}END{printf("%d\n",n/1024/1024);}'`
+ apache=`ps axf | grep apache |wc -l`
+ tilecache=`df -h | grep /mnt/tiles | awk '{gsub("%","");print $5;}'`
+ if ( ps axf | grep tirex-master | grep -v grep >/dev/null ) ; then 
+  que=`tirex-status -o -r | jq -r "[.queue.size,.queue.maxsize] | @csv"`
+ else
+  que="-1,-1"
+ fi
+ transfer=`ifconfig bond0 | grep "RX packets\|TX packets" | awk '/RX/{r=$5;}/TX/{t=$5;}END{printf("%d,%d\n",r/1024/1024/1024,t/1024/1024/1024);}'`
+ accesses=`wget http://localhost:80/server-status -O - 2>/dev/null | grep "Total access"  | awk '{print $3;}'`
+
+
+
+#
+# Touching /mnt/tiles/opentopomap/planet-import-complete to mark all tiles older than that date as dirty
+#
+ d=`date +"%Y-%m-%d %H:%M:%S"`
+ if ( find /mnt/tiles/opentopomap/ -maxdepth 1 -name planet-import-complete -mtime +$CACHETIME | grep planet > /dev/null ) ; then 
+  touch -d "$CACHETIME days ago" /mnt/tiles/opentopomap/planet-import-complete
+  d=`date +"%Y-%m-%d %H:%M:%S"`
+  echo -n "$d [update] touching /mnt/tiles/opentopomap/planet-import-complete to "
+  ls -l /mnt/tiles/opentopomap/planet-import-complete | awk '{print $6" "$7" "$8;}'
+ fi
+
+#
+# write status and maybe warning, if the server has bootet in the last 1 hour an tirex is down, try to restart tirex
+#
+ echo "$d [info] load $load io-wait $wait memuse $usmem tirexmem $mem swap $swap connections $conn ip-addresses $addr apaches $apache tilecache $tilecache queues $que GB_rxtx $transfer acc $accesses"
+ if [ $tilecache -gt $DISKSPACE ] ; then
+  echo "$d [warning] tilecache is too full: $tilecache"
+ fi
+ if ( ! (ps axf | grep tirex-master | grep -v grep >/dev/null) ) ; then 
+  echo "$d [warning] tirex is not running"
+  upsec=`cat /proc/uptime | awk '{print int($1)}'`
+  if [ $upsec -le 3600 ] ; then
+   if [ $tilecache -le $DISKSPACE ] ; then
+    d=`date +"%Y-%m-%d %H:%M:%S"`
+    echo "$d [restart] system is up for only $upsec seconds, so try to (re-)start tirex"
+    /etc/init.d/tirex-backend-manager stop
+    /etc/init.d/tirex-master stop
+    /etc/init.d/tirex-master start
+    /etc/init.d/tirex-backend-manager start
+   fi
+  fi
+ fi
+
+
+#
+# Stop tirex if tirex is running and /mnt/tiles has >DISKSPACE usage
+#
+if ( ps axf | grep tirex-master | grep -v grep >/dev/null ) ; then 
+ if [ $tilecache -gt $DISKSPACE ] ; then
+  d=`date +"%Y-%m-%d %H:%M:%S"`
+  echo "$d [stop] /mnt/tiles usage is $tilecache stoping tirex"
+  /etc/init.d/tirex-backend-manager stop
+  /etc/init.d/tirex-master stop
+ fi
+fi
+
+
+#
+# restart tirex-backend and tirex-master if mem usage > MAXMEMORY or mem+swap > MAXTOTALMEM
+#
+ if [[ $mem -gt $MAXMEMORY ]] || [[ $totalmem -gt $MAXTOTALMEM ]] ; then
+  d=`date +"%Y-%m-%d %H:%M:%S"`
+  echo "$d [restart] memory for mapnik and tirex is $mem GByte, $usmem Gbyte Memory, $swap Gbyte swapped, $totalmem total memory+swap"
+  echo "$d [restart] restarting tirex-backend-manager"
+  /etc/init.d/tirex-backend-manager restart >/dev/null 2>/dev/null
+  d=`date +"%Y-%m-%d %H:%M:%S"`
+  echo "$d [restart] restarting tirex-master"
+  /etc/init.d/tirex-master restart >/dev/null 2>/dev/null
+  sleep 30
+  d=`date +"%Y-%m-%d %H:%M:%S"`
+  mem=`ps axfl | grep "mapnik\|tirex-master" | awk '{n+=$8;}END{printf("%d\n",n/1024/1024);}'`
+  echo "$d [restart] memory for mapnik and tirex is $mem GByte"
+ fi
+) >> /var/log/tirexwatch.log
+
+
+#
+# check if tirex-master should run, ping to it and restart tirex-master if no ping in 20s
+#
+(
+ if ( ps axf | grep tirex-master | grep -v grep >/dev/null ) ; then 
+  if ( ! tirex-send ping ) ; then 
+   d=`date +"%Y-%m-%d %H:%M:%S"`
+   echo "$d [ping] no ping to tirex-master (1/4)"
+   sleep 10
+   if ( ! tirex-send ping ) ; then 
+    d=`date +"%Y-%m-%d %H:%M:%S"`
+    echo "$d [ping] no ping to tirex-master (2/4)"
+    sleep 20
+    if ( ! tirex-send ping ) ; then 
+     d=`date +"%Y-%m-%d %H:%M:%S"`
+     echo "$d [ping] no ping to tirex-master (3/4)"
+     sleep 60
+     if ( ! tirex-send ping ) ; then
+      d=`date +"%Y-%m-%d %H:%M:%S"`
+      echo "$d [ping] no ping to tirex-master (4/4)"  
+      echo "$d [restart] restarting tirex-backend-manager"
+      /etc/init.d/tirex-backend-manager restart >/dev/null 2>/dev/null
+      d=`date +"%Y-%m-%d %H:%M:%S"`
+      echo "$d [restart] restarting tirex-master"
+      /etc/init.d/tirex-master restart >/dev/null 2>/dev/null
+      sleep 30
+      d=`date +"%Y-%m-%d %H:%M:%S"`
+      mem=`ps axfl | grep "mapnik\|tirex-master" | awk '{n+=$8;}END{printf("%d\n",n/1024/1024);}'`
+      echo "$d [restart] memory for mapnik and tirex is $mem GByte"
+     fi
+    fi
+   fi
+  fi
+ fi 
+) >> /var/log/tirexwatch.log
+
+#
+# A young /mnt/tiles/opentopomap/planet-import-complete means, that there was an update of the planet in the last days. At this time we want mod_tile to deliver the tiles at once but let it render
+# in background ("ModTileRequestTimeout 0").
+# After some weeks this should change this to "ModTileRequestTimeout 4". That means mod_tile tries to render the tile in 4 seconds. If this failed, it delivers the old tile, a new tile is rendered
+# in background. This change is done 2 days before CACHETIME and only between 0 and 4 o'clock, because a apache reload is necessary.
+#
+(
+ if [ `date +"%H"` -lt 4 ] ; then
+  if ( ps axf | grep tirex-master | grep -v grep >/dev/null ) ; then
+   if [ -e /mnt/tiles/opentopomap/planet-import-complete ] ;then
+    m1=`grep 'ModTileRequestTimeout' /etc/apache2/sites-available/tileserver_site.conf         | grep -E -v "^ *# *Mod" | awk '{print $2}'`
+    m2=`grep 'ModTileRequestTimeout' /etc/apache2/sites-available/tileserver_site-le-ssl.conf  | grep -E -v "^ *# *Mod" | awk '{print $2}'`
+    d=`date +"%Y-%m-%d %H:%M:%S"`
+    if [[ $m1 = "0" ]] && [[ $m2 = "0" ]] ; then
+     if ( find /mnt/tiles/opentopomap/ -maxdepth 1 -name planet-import-complete -mtime +$(($CACHETIME-2)) | grep planet > /dev/null ) ; then
+      cp /etc/apache2/sites-available/tileserver_site.conf        /etc/apache2/sites-available/tileserver_site.conf.backup
+      cp /etc/apache2/sites-available/tileserver_site-le-ssl.conf /etc/apache2/sites-available/tileserver_site-le-ssl.conf.backup
+      sed 's/^[^#]*ModTileRequestTimeout.*0/   ModTileRequestTimeout 4/g' /etc/apache2/sites-available/tileserver_site.conf.backup        > /etc/apache2/sites-available/tileserver_site.conf
+      sed 's/^[^#]*ModTileRequestTimeout.*0/   ModTileRequestTimeout 4/g' /etc/apache2/sites-available/tileserver_site-le-ssl.conf.backup > /etc/apache2/sites-available/tileserver_site-le-ssl.conf
+      echo "$d [switchconfig] changed ModTileRequestTimeout to 4 in /etc/apache2/sites-available/tileserver_site*.conf. Now reloading apache"
+      /etc/init.d/apache2 reload
+      d=`date +"%Y-%m-%d %H:%M:%S"`
+      echo "$d [switchconfig] apache reloaded"
+     fi
+    else
+     if ( find /mnt/tiles/opentopomap/ -maxdepth 1 -name planet-import-complete -mtime -$(($CACHETIME-3)) | grep planet > /dev/null ) ; then
+      cp /etc/apache2/sites-available/tileserver_site.conf        /etc/apache2/sites-available/tileserver_site.conf.backup
+      cp /etc/apache2/sites-available/tileserver_site-le-ssl.conf /etc/apache2/sites-available/tileserver_site-le-ssl.conf.backup
+      sed 's/^[^#]*ModTileRequestTimeout.*4/   ModTileRequestTimeout 0/g' /etc/apache2/sites-available/tileserver_site.conf.backup        > /etc/apache2/sites-available/tileserver_site.conf
+      sed 's/^[^#]*ModTileRequestTimeout.*4/   ModTileRequestTimeout 0/g' /etc/apache2/sites-available/tileserver_site-le-ssl.conf.backup > /etc/apache2/sites-available/tileserver_site-le-ssl.conf
+      echo "$d [switchconfig] changed ModTileRequestTimeout to 0 in /etc/apache2/sites-available/tileserver_site*.conf. Now reloading apache"
+      /etc/init.d/apache2 reload
+      d=`date +"%Y-%m-%d %H:%M:%S"`
+      echo "$d [switchconfig] apache reloaded"
+     fi
+    fi
+   fi
+  fi
+ fi
+) >> /var/log/tirexwatch.log
+
+
+
+
+#
+# rotate logs
+#
+lin=0
+lin=`cat /var/log/tirexwatch.log 2>/dev/null | wc -l`
+if [ $lin -gt 10000 ] ; then
+ rm /var/log/tirexwatch.log.2.gz
+ cat /var/log/tirexwatch.log.1 | gzip > /var/log/tirexwatch.log.2.gz
+ mv  /var/log/tirexwatch.log  /var/log/tirexwatch.log.1
+ touch /var/log/tirexwatch.log
+ chmod 0644 /var/log/tirexwatch.log
+ chown tirex  /var/log/tirexwatch.log
+ chmod 0644 /var/log/tirexwatch.log.1
+ chown tirex  /var/log/tirexwatch.log.1
+ chmod 0644 /var/log/tirexwatch.log.*.gz
+ chown tirex /var/log/tirexwatch.log.*.gz
+fi
+
